@@ -5,37 +5,38 @@
 -author('saleyn@gmail.com').
 -mode  (compile).
 
-main([[$-,$h | _]]) ->
+main(["-h" | _]) ->
     usage();
-main([[$-,$-,$h | _]]) ->
+main(["--help" | _]) ->
     usage();
-main(["-f" | F]) ->
-    {ok, Io} = file:open(F, [read, binary, raw]),
+main(["-f", F | _]) when hd(F) =/= $- ->
+    {ok, Io} = file:open(F, [read, binary, raw, {read_ahead, 256*1024}]),
     read_file(Io);
-main([String]) ->
+main(["8=FIX" ++ _ = String]) ->
     try
-        case lists:reverse(String) of
-        [$| | _] -> fix:print(String);
-        L        -> fix:print(lists:reverse([$| | L]))
-        end
+        fix:print(list_to_binary(String))
     catch _:_ ->
         usage()
     end;
 main([]) ->
     % Read from stdin
+    io:setopts(standard_io, [binary]),
     read_file(standard_io);
 main(_) ->
     usage().
 
 usage() ->
-    io:format("Usage: ~s [FixInputString] [-f Filename]\n", [escript:script_name()]),
+    io:format("FIX message decoder\n"
+              "Usage: ~s [FixInputString] [-f Filename]\n", [escript:script_name()]),
     halt(1).
 
 read_file(Io) ->
     case file:read_line(Io) of
-    {ok, Line} ->
+    {ok, <<"8=FIX", _/binary>> = Line} ->
         io:put_chars(Line),
         fix:print(Line),
+        read_file(Io);
+    {ok, _Other} ->
         read_file(Io);
     eof ->
         ok
