@@ -105,17 +105,22 @@ deliminate_one(Data, Sep) ->
 
 replace1(Msg, Sep) ->
     %binary:replace(Msg, <<1>>, <<$|>>, [global]).
-    [parse_field(B) || B <- binary:split(Msg, <<Sep>>, [global])].
-
-parse_field(Bin) ->
-    {Pos, 1} = binary:match(Bin, <<$=>>),
-    N = lists:filter(fun(I) -> I >= $0 andalso I =< $9 end, binary:bin_to_list(Bin, {0, Pos})),
-    try
-        {list_to_integer(N), binary:part(Bin, {Pos+1, byte_size(Bin)-Pos-1})}
-    catch _:Error ->
-        io:format(standard_error, "Error parsing: ~p: ~p\n  ~p\n",
-            [Bin, Error, erlang:get_stacktrace()])
-    end.
+    lists:foldr(
+        fun(Bin, Acc) ->
+            case binary:match(Bin, <<$=>>) of
+            {Pos, 1} ->
+                N = lists:filter(fun(I) -> I >= $0 andalso I =< $9 end, binary:bin_to_list(Bin, {0, Pos})),
+                try
+                    [{list_to_integer(N), binary:part(Bin, {Pos+1, byte_size(Bin)-Pos-1})} | Acc]
+                catch _:Error ->
+                    io:format(standard_error, "Error parsing: ~p: ~p\n  ~p\n",
+                        [Bin, Error, erlang:get_stacktrace()]),
+                    throw(Error)
+                end;
+            nomatch ->
+                Acc
+            end
+        end, [], binary:split(Msg, <<Sep>>, [global])).
 
 %%%----------------------------------------------------------------------------
 %%% Internal functions

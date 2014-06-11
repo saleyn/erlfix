@@ -15,8 +15,8 @@ main(["-f", F | _]) when hd(F) =/= $- ->
 main(["8=FIX" ++ _ = String]) ->
     try
         fix:print(list_to_binary(String))
-    catch _:_ ->
-        usage()
+    catch _:Error ->
+        io:format(standard_error, "Error: ~p\n  ~p\n", [Error, erlang:get_stacktrace()])
     end;
 main([]) ->
     % Read from stdin
