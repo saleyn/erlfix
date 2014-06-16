@@ -10,7 +10,7 @@
 -author('saleyn@gmail.com').
 
 %% API
--export([parse/1, parse/2, print/1, test/0]).
+-export([parse/1, parse/2, print/1, print/2, test/0]).
 
 -include("fix_parse.hrl").
 
@@ -30,38 +30,55 @@ parse(File) when is_list(File) ->
 parse(Bin) when is_binary(Bin) ->
     parse(Bin, []).
 
+-spec parse(string() | binary(), [{error, abort|ignore} | pipe | full]) ->
+        [{integer() | any()}].
 parse(File, Options) when is_list(File) ->
     {ok, Bin} = file:read_file(File),
     parse(Bin, Options);
 parse(Bin, Options) when is_binary(Bin) ->
-    Sep = case lists:member(pipe, Options) of
+    Err = proplists:get_value(error, Options, abort),
+    Sep = case proplists:get_value(pipe, Options, false) of
           true -> $|;
           false -> guess_sep(Bin)
           end,
-    {Msgs, _Rest} = deliminate(Bin, [], Sep),
-    case lists:member(full, Options) of
-    true ->
-        [fix_parse:full_decode(M) || M <- Msgs];
-    false ->
-        [fix_parse:decode(M) || M <- Msgs]
-    end.
+    {Msgs, _Rest} = deliminate(Bin, [], Sep, Err),
+    DecodeFun     = decode_fun(proplists:get_value(full, Options, false)),
+    [decode(DecodeFun, M, Err) || M <- Msgs].
 
-print(Bin) when is_list(Bin) -> print(list_to_binary(Bin));
-print(Bin) when is_binary(Bin) ->
-    {Msgs, _Rest} = deliminate(Bin, [], $|),
+print(Bin) ->
+    print(Bin, abort).
+print(Bin, IgnoreError) when is_list(Bin) ->
+    print(list_to_binary(Bin), IgnoreError);
+print(Bin, IgnoreError) when is_binary(Bin) ->
+    {Msgs, _Rest} = deliminate(Bin, [], $|, IgnoreError),
     [begin
-        [print(I, V) || {I,V} <- Msg],
+        [print2(I, V) || {I,V} <- Msg],
         io:put_chars("\n")
      end || Msg <- Msgs],
     ok.
 
-print(I, V) ->
-    io:format("~5w ~30w ~s\n",
+%%%----------------------------------------------------------------------------
+%%% Internal functions
+%%%----------------------------------------------------------------------------
+
+print2(I, V) ->
+    io:format("~5w | ~30w | ~s\n",
         [I, try
                 element(1, fix_parse:decode_field(I))
             catch _:_ ->
                 undefined
             end, try_decode(I, V)]).
+
+decode_fun(true)  -> fun(M) -> fix_parse:full_decode(M) end;
+decode_fun(false) -> fun(M) -> fix_parse:decode(M)      end.
+
+decode(Fun, Msg, Err) ->
+    try
+        Fun(Msg)
+    catch _:Error when Err =:= ignore ->
+        io:format(standard_error, "Msg:   ~p\nError: ~p\n       ~p\n",
+            [Msg, Error, erlang:get_stacktrace()])
+    end.
 
 try_decode(I, V) ->
     try
@@ -78,12 +95,19 @@ try_decode(I, V) ->
         binary_to_list(V)
     end.
 
-deliminate(Bin, Acc, Sep) ->
+deliminate(Bin, Acc, Sep, Err) ->
     case deliminate_one(Bin, Sep) of
     {ok, Msg, Rest} ->
-        deliminate(Rest, [replace1(Msg, Sep) | Acc], Sep);
+        Acc1 = deliminate2(Msg, Acc, Sep, Err),
+        deliminate(Rest, Acc1, Sep, Err);
     {not_found, Msg} ->
         {lists:reverse(Acc), Msg}
+    end.
+
+deliminate2(Msg, Acc, Sep, Err) ->
+    try [replace1(Msg, Sep) | Acc]
+    catch _:_ when Err =:= ignore ->
+        Acc
     end.
 
 deliminate_one(Data, Sep) ->
@@ -104,27 +128,23 @@ deliminate_one(Data, Sep) ->
     end.
 
 replace1(Msg, Sep) ->
-    %binary:replace(Msg, <<1>>, <<$|>>, [global]).
     lists:foldr(
         fun(Bin, Acc) ->
             case binary:match(Bin, <<$=>>) of
-            {Pos, 1} ->
-                N = lists:filter(fun(I) -> I >= $0 andalso I =< $9 end, binary:bin_to_list(Bin, {0, Pos})),
+            {0, _} ->
+                throw({missing_field_tag, Bin});
+            {Pos, _} ->
+                N = lists:filter(fun(I) -> I >= $0 andalso I =< $9 end,
+                                 binary:bin_to_list(Bin, {0, Pos})),
                 try
                     [{list_to_integer(N), binary:part(Bin, {Pos+1, byte_size(Bin)-Pos-1})} | Acc]
                 catch _:Error ->
-                    io:format(standard_error, "Error parsing: ~p: ~p\n  ~p\n",
-                        [Bin, Error, erlang:get_stacktrace()]),
-                    throw(Error)
+                    throw({'Parsing error', Error, Bin})
                 end;
             nomatch ->
                 Acc
             end
         end, [], binary:split(Msg, <<Sep>>, [global])).
-
-%%%----------------------------------------------------------------------------
-%%% Internal functions
-%%%----------------------------------------------------------------------------
 
 guess_sep(Bin) ->
     case binary:match(Bin, [<<$|>>, <<1>>], [{scope, {0, 15}}]) of
@@ -133,6 +153,10 @@ guess_sep(Bin) ->
     nomatch ->
         throw({cannot_determine_delimiter, binary_part(Bin, {0, 30})})
     end.
+
+%%%----------------------------------------------------------------------------
+%%% Test functions
+%%%----------------------------------------------------------------------------
 
 test() ->
     io:format("~p\n",
